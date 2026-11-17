@@ -1,0 +1,6 @@
+# DESIGN.md 의 색 규칙 (포인트 파랑 · 연한 배경 · 글자색)
+[theme]
+primaryColor = "#2B59C3"
+backgroundColor = "#F5F7FB"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#1B1F24"

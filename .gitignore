@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+vectorstore/
+chroma_db/
+
+# Streamlit secrets file (contains keys)
+.streamlit/secrets.toml
+# temp files and submission zip
+.playwright-mcp/
+*.zip
