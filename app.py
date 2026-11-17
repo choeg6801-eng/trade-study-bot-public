@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 import graph
 import ingest
@@ -49,8 +50,11 @@ html, body, .stApp, .stApp :not([data-testid="stIconMaterial"]):not(.material-sy
 /* 불필요한 기본 화면 요소는 숨기되, 사이드바 여닫기 버튼은 꼭 남겨요 */
 [data-testid="stAppDeployButton"], [data-testid="stMainMenu"], [data-testid="stDecoration"], footer, #MainMenu { display: none !important; }
 [data-testid="stHeaderActionElements"], h1 a { display: none !important; }
-[data-testid="stHeader"] { background: transparent; }
-.block-container { max-width: 760px; padding-top: 3.4rem; padding-bottom: 7rem; }
+[data-testid="stHeader"] { background: rgba(245,247,251,0.88); backdrop-filter: blur(6px); }  /* 스크롤할 때 글자가 위 버튼과 겹치지 않게 */
+.block-container { max-width: 760px; padding-top: 3.4rem; padding-bottom: 0; min-height: 100vh; display: flex; flex-direction: column; }
+.block-container > [data-testid="stVerticalBlock"] { flex: 1; }
+/* 입력창: 가운데 열 안에서 화면 아래에 붙어 있어요 */
+[data-testid="stLayoutWrapper"]:has(> .st-key-chatbar) { position: sticky; bottom: 0; z-index: 50; margin-top: auto; padding: 0.8rem 0 1.1rem; background: linear-gradient(to top, #F5F7FB 78%, rgba(245,247,251,0)); }
 /* 방안지(공책) 같은 점무늬 배경 */
 .stApp { background-color: var(--surface); background-image: radial-gradient(#D5DDEC 1px, transparent 1px); background-size: 22px 22px; color: var(--text); }
 .stApp p, .stApp li { font-size: 1rem; line-height: 1.7; }
@@ -182,6 +186,9 @@ html, body, .stApp, .stApp :not([data-testid="stIconMaterial"]):not(.material-sy
 [data-testid="stFileUploaderDropzoneInstructions"] { display: none; }
 [data-testid="stFileUploaderDropzone"] { padding: 0.6rem; border-radius: var(--radius); }
 
+/* 스크롤 보정용 보이지 않는 조각은 자리를 차지하지 않게 해요 */
+.stElementContainer:has(iframe) { height: 0; margin-bottom: -1rem; overflow: hidden; }
+
 /* 입력창 */
 [data-testid="stChatInput"] { border-radius: var(--radius); }
 [data-testid="stChatInput"] textarea { font-size: 0.97rem; }
@@ -245,6 +252,28 @@ DOC_ICON = (
     '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
     '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>'
 )
+
+
+SCROLL_BOTTOM_JS = """
+<script>
+  // 질문을 보낸 뒤 답이 나오는 동안(최대 약 12초) 새 내용이 보이게 아래로 따라가요.
+  // 사용자가 직접 위로 스크롤하면(휠 · 터치) 바로 멈춰요.
+  const doc = window.parent.document;
+  const box = doc.querySelector('[data-testid="stMain"]');
+  let follow = true, tries = 0;
+  const stop = () => { follow = false; };
+  doc.addEventListener('wheel', stop, { passive: true });
+  doc.addEventListener('touchmove', stop, { passive: true });
+  const timer = setInterval(() => {
+    if (follow && box) box.scrollTop = box.scrollHeight;
+    if (!follow || ++tries > 60) {
+      clearInterval(timer);
+      doc.removeEventListener('wheel', stop);
+      doc.removeEventListener('touchmove', stop);
+    }
+  }, 200);
+</script>
+"""
 
 
 def esc(text):
@@ -528,61 +557,68 @@ if mode == MODES[1]:
     st.stop()
 
 # ---------- 질문하기 ----------
-typed = st.chat_input("선하에게 용어나 노트 내용을 물어보세요")
+# 대화가 그려지는 칸을 먼저 만들고, 입력창을 그 아래(문서의 맨 끝)에 둬요.
+# Streamlit 기본 입력창을 쓰면 열자마자 맨 아래로 자동 스크롤되어 머리말이 잘려 보여서,
+# 입력창을 컨테이너 안에 넣고 CSS(.st-key-chatbar)로 화면 아래에 붙였어요.
+chat_area = st.container()
+with st.container(key="chatbar"):
+    typed = st.chat_input("선하에게 용어나 노트 내용을 물어보세요")
 question = (st.session_state.pop("pending", None) or typed or "").strip()
 
-# 첫 화면 안내는 한 칸(placeholder)에 담아 두고, 질문이 들어오면 바로 비워요 (흐릿한 잔상 방지)
-intro = st.empty()
-if not st.session_state.messages and not question:
-    with intro.container():
-        if today_term:
-            st.markdown(
-                f'<div class="today"><span class="tag">오늘의 용어</span>'
-                f'<div class="term">{esc(today_term[0])}</div><div class="mean">{esc(today_term[1])}</div></div>',
-                unsafe_allow_html=True,
-            )
-            st.button("이 용어 더 물어보기", key="today_ask", on_click=ask_this, icon=":material/chat:",
-                      args=(f"{today_term[0]} 에 대해 더 자세히 알려 줘",))
-        st.markdown('<div class="sec-label">이렇게 물어볼 수 있어요</div>', unsafe_allow_html=True)
-        cols = st.columns(2)
-        for i, (icon, example) in enumerate(EXAMPLES):
-            cols[i % 2].button(example, key=f"ex{i}", icon=icon, on_click=ask_this, args=(example,))
-
-for m in st.session_state.messages:
-    show_message(m)
-
-if question:
-    past = st.session_state.messages
-    if past and past[-1]["role"] == "user":
-        # 앞 질문의 답이 끝나기 전에 새 질문을 보내면 답이 비어요 → 자리를 채워 대화 짝이 어긋나지 않게 해요
-        past.append({"role": "assistant", "content": INTERRUPTED, "answer": INTERRUPTED, "sources": []})
-        show_message(past[-1])
-    # 직전 대화 2번까지만 넘겨서 "그건 뭐야?" 같은 질문도 이해하게 해요 (질문 → 답 짝이 맞는 것만)
-    history = [
-        {"q": past[i]["content"], "a": past[i + 1]["content"]}
-        for i in range(len(past) - 1)
-        if past[i]["role"] == "user" and past[i + 1]["role"] == "assistant" and past[i + 1]["answer"] != INTERRUPTED
-    ][-2:]
-
-    st.session_state.messages.append({"role": "user", "content": question})
-    show_message(st.session_state.messages[-1])
-
-    with st.chat_message("assistant"):
-        box = st.empty()  # 진행 상황 → 글자가 흘러나오는 답 → 완성된 답 순서로 바뀌는 자리
-        result, text = {}, ""
-        for kind, value in graph.ask_stream(question, history):  # 질문 1번에 OpenAI 호출은 필요할 때만
-            if kind == "step" and not text:
-                box.markdown(
-                    f'<div class="thinking">{mascot_small("thinking")}<span>{esc(value)}<span class="dots"></span></span></div>',
+with chat_area:
+    # 첫 화면 안내는 한 칸(placeholder)에 담아 두고, 질문이 들어오면 바로 비워요 (흐릿한 잔상 방지)
+    intro = st.empty()
+    if not st.session_state.messages and not question:
+        with intro.container():
+            if today_term:
+                st.markdown(
+                    f'<div class="today"><span class="tag">오늘의 용어</span>'
+                    f'<div class="term">{esc(today_term[0])}</div><div class="mean">{esc(today_term[1])}</div></div>',
                     unsafe_allow_html=True,
                 )
-            elif kind == "token":
-                text += value
-                box.markdown(text + " ▍")
-            elif kind == "done":
-                result = value
-        with box.container():  # 같은 자리에 완성된 답 + 출처를 그려요
-            render_answer(result, fresh=True)
+                st.button("이 용어 더 물어보기", key="today_ask", on_click=ask_this, icon=":material/chat:",
+                          args=(f"{today_term[0]} 에 대해 더 자세히 알려 줘",))
+            st.markdown('<div class="sec-label">이렇게 물어볼 수 있어요</div>', unsafe_allow_html=True)
+            cols = st.columns(2)
+            for i, (icon, example) in enumerate(EXAMPLES):
+                cols[i % 2].button(example, key=f"ex{i}", icon=icon, on_click=ask_this, args=(example,))
 
-    # content 에는 답 글자를, 나머지(answer · sources · rewritten)는 다시 그릴 때 써요
-    st.session_state.messages.append({"role": "assistant", "content": result["answer"], **result})
+    for m in st.session_state.messages:
+        show_message(m)
+
+    if question:
+        past = st.session_state.messages
+        if past and past[-1]["role"] == "user":
+            # 앞 질문의 답이 끝나기 전에 새 질문을 보내면 답이 비어요 → 자리를 채워 대화 짝이 어긋나지 않게 해요
+            past.append({"role": "assistant", "content": INTERRUPTED, "answer": INTERRUPTED, "sources": []})
+            show_message(past[-1])
+        # 직전 대화 2번까지만 넘겨서 "그건 뭐야?" 같은 질문도 이해하게 해요 (질문 → 답 짝이 맞는 것만)
+        history = [
+            {"q": past[i]["content"], "a": past[i + 1]["content"]}
+            for i in range(len(past) - 1)
+            if past[i]["role"] == "user" and past[i + 1]["role"] == "assistant" and past[i + 1]["answer"] != INTERRUPTED
+        ][-2:]
+
+        st.session_state.messages.append({"role": "user", "content": question})
+        show_message(st.session_state.messages[-1])
+        components.html(SCROLL_BOTTOM_JS, height=0)  # 답이 나오는 동안 화면이 아래로 따라가게 해요
+
+        with st.chat_message("assistant"):
+            box = st.empty()  # 진행 상황 → 글자가 흘러나오는 답 → 완성된 답 순서로 바뀌는 자리
+            result, text = {}, ""
+            for kind, value in graph.ask_stream(question, history):  # 질문 1번에 OpenAI 호출은 필요할 때만
+                if kind == "step" and not text:
+                    box.markdown(
+                        f'<div class="thinking">{mascot_small("thinking")}<span>{esc(value)}<span class="dots"></span></span></div>',
+                        unsafe_allow_html=True,
+                    )
+                elif kind == "token":
+                    text += value
+                    box.markdown(text + " ▍")
+                elif kind == "done":
+                    result = value
+            with box.container():  # 같은 자리에 완성된 답 + 출처를 그려요
+                render_answer(result, fresh=True)
+
+        # content 에는 답 글자를, 나머지(answer · sources · rewritten)는 다시 그릴 때 써요
+        st.session_state.messages.append({"role": "assistant", "content": result["answer"], **result})
